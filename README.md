@@ -32,10 +32,12 @@ SproutNet 是一个"生长即学习"的神经网络实验：网络拓扑完全�
 
 - **记忆容量 scaling（延迟回忆探针）**：k=16 时，cap=96 的"大脑" 2.38 nats vs 小脑 5.05 nats（大脑完胜）；
   k=8 两者持平（1.64 vs 2.38），scaling 签名成立
-- **文本学习（1000 条 Q&A 协议，assistant 掩码 + 防泄露划分，V=10000 BPE）**：
-  - 基线：unigram PPL 1928 / acc 0.048；bigram acc 0.147
-  - 0.3.0（3 轮）：val PPL **2583 → 2193 → 2046**（仍在下降），val acc 越过 unigram；训练窗已越过 unigram
-- **生长健康**：出生 / 死亡持续进行（73/26 → 88/41），G 有界（19 → 10），速度 ≈ 200–400 tok/s
+- **文本学习（Q&A 协议，assistant 掩码 + 防泄露划分，V=10000 BPE）**：
+  - 基线（500 条）：unigram PPL 1951 / acc 0.049；bigram acc 0.137
+  - 0.3.0（1000 条，3 轮 + 续训）：val PPL 2583 → 2193 → 2046 → **1815**（越过 unigram），acc 0.09
+  - 0.4.0（500 条，3 轮）：val PPL **2474 → 2085 → 1906**（越过 unigram），acc 0.09；训练窗已达 1006–1500
+- **自适应生长**：内部神经元随需求自发生长至 91+（不再卡在 ~63 的旧均衡）；出生 143 / 死亡 52；
+  G 18.4 → 5.7 平滑自限、无爆炸（贵在养不在生；数量由能量均衡涌现）；速度 ≈ 130–400 tok/s（CPU）
 
 ## 版本时间线
 
@@ -48,6 +50,7 @@ SproutNet 是一个"生长即学习"的神经网络实验：网络拓扑完全�
 | 0.2.1 | 修复 | `--epochs` 命令行参数失效 |
 | 0.2.2 | 修复 | 检查点 `.npz` 静默后缀 bug（此前每次训练都在从零开始）；跨会话累积恢复 |
 | 0.3.0 | 资格迹 | 三因子迹形式（λ=慢记忆尺度，无新增魔数）；语料条数上限 `--records` |
+| 0.4.0 | 自适应生长 | 出生价恒定化（数量由"维持成本×数量 vs 收入"的均衡涌现）；生长配额按相对学习亏欠分配；cap 仅作内存上界；CPU/500 条协议 |
 
 ## 快速开始
 
@@ -55,10 +58,10 @@ SproutNet 是一个"生长即学习"的神经网络实验：网络拓扑完全�
 
 ```bash
 # 自检（训一份小分词器并小规模验证）
-python SproutNet_elite_0.3.0.py --smoke
+python SproutNet_elite_0.4.0.py --smoke
 
-# 训练（Q&A 语料）
-python SproutNet_elite_0.3.0.py --train corpus.jsonl --epochs 3 --tokens 60000 --records 1000
+# 训练（Q&A 语料；CPU-only 参考协议：500 条）
+python SproutNet_elite_0.4.0.py --train corpus.jsonl --epochs 3 --tokens 60000 --records 500
 ```
 
 语料格式：JSONL，每行一个记录：
