@@ -769,6 +769,7 @@ class SproutBrain:
         self.births = 0
         self.deaths = 0
         self.max_n = 2 * V
+        self.hw = 2 * V                    # 高水位线：replay 只存 [0,hw)，避免 310MB/token 的灾难
         self.last_e = np.zeros(V)
         self.prev_tok = None               # coverage 0.2.0：上一个 token（共激活生长用）
 
@@ -841,6 +842,7 @@ class SproutBrain:
         self.av[nid] = 0.0
         self.atp[nid] = 1.0
         self.max_n = max(self.max_n, int(self.int_alive.sum()) + 2 * self.V)
+        self.hw = max(self.hw, nid + 1)
         return nid
 
     def kill_int(self, nid):
@@ -1171,12 +1173,13 @@ class SproutBrain:
         B = len(self.recent)
         if B == 0:
             return 0
-        Ap = np.stack([r[0] for r in self.recent])
+        keep = min(len(r[0]) for r in self.recent)
+        Ap = np.stack([r[0][:keep] for r in self.recent])
         xs = np.array([r[1] for r in self.recent])
         es = 1.0 / (1.0 + self.clock / gp['eta_age_tau'])
-        mro = self.s_alive & (self.s_j < self.V)
-        mc = self.c_alive
-        An = Ap / (np.sqrt(self.var).astype(np.float32) + np.float32(0.1))
+        mro = self.s_alive & (self.s_j < self.V) & (self.s_i < keep)
+        mc = self.c_alive & (self.c_i < keep) & (self.c_j < keep)
+        An = Ap / (np.sqrt(self.var[:keep]).astype(np.float32) + np.float32(0.1))
         bs = gp['replay_batch']
         order = np.arange(B)
         ci = self.c_i[mc]
@@ -1245,7 +1248,7 @@ class SproutBrain:
                     hits += 1
             learn_here = learn and m
             if learn_here and logits is not None:
-                self.recent.append((self.ap.astype(np.float32), int(x)))
+                self.recent.append((self.ap[:self.hw].astype(np.float32), int(x)))
                 if len(self.recent) > self.gp['replay_len']:
                     self.recent.pop(0)
             logits = self.step(int(x), logits, learn_here)
@@ -1305,7 +1308,7 @@ class SproutBrain:
             c_i=self.c_i, c_j=self.c_j, c_rows=self.c_rows, c_w=self.c_w, c_alive=self.c_alive,
             c_usage=self.c_usage, n_coinc=self.n_coinc,
             syn_keys=syn_keys_arr, coinc_keys=coinc_keys_arr,
-            clock=self.clock, spines=self.spines, births=self.births, deaths=self.deaths, max_n=self.max_n,
+            clock=self.clock, spines=self.spines, births=self.births, deaths=self.deaths, max_n=self.max_n, hw=self.hw,
             err=self.err, err_slow=self.err_slow, hab=self.hab, nov=self.nov, nov_slow=self.nov_slow, G=self.G,
             av=self.av, var=self.var, atp=self.atp, u_util=self.u_util,
             gp_json=json.dumps(self.gp),
@@ -1321,6 +1324,7 @@ class SproutBrain:
         self.births = int(z['births'])
         self.deaths = int(z['deaths'])
         self.max_n = int(z['max_n'])
+        self.hw = int(z['hw']) if 'hw' in z.files else max(2 * V, int(np.nonzero(self.int_alive)[0].max()) + 1 if self.int_alive.any() else 2 * V)
         self.G = float(z['G'])
         self.nov = float(z['nov'])
         self.nov_slow = float(z['nov_slow'])
