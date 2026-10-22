@@ -170,6 +170,8 @@ _COINC_BYTES = 208.0             # c_i,c_j + c_rows/c_w/c_av/c_var（fan=6 → 1
 CAP_INT = int(_MEM_BYTES * 0.34 / _INT_BYTES)
 CAP_SYN = int(_MEM_BYTES * 0.33 / _SYN_BYTES)
 CAP_COINC = int(_MEM_BYTES * 0.33 / _COINC_BYTES)
+_BEST_PPL = float('inf')
+FREEZE_CAP = _os.environ.get('SPROUT_FREEZE_CAP', '0') == '1'   # A/B：满员冻结结构 vs 淘汰
 SPROUT_GP = dict(
     # 动力学
     lam=0.35, lam_slow=0.95, c_in=1.0, sigma=0.02,
@@ -194,7 +196,7 @@ SPROUT_GP = dict(
     # 修剪与稳态（突触缩放、用率门控凋亡）
     w_res=0.001, wd=0.010, w_clip=3.0, crisis=3.0, dream_noise=0.15,
     # 睡眠重放（微睡眠间隔=缓冲容量；批次化序列重放）
-    replay_len=1024, replay_sweeps=4, replay_batch=128, micro_sleep=True,
+    replay_len=1024, replay_sweeps=1, replay_batch=32, micro_sleep=True,
     cap_syn=CAP_SYN, cap_coinc=CAP_COINC, cap_int=CAP_INT,
 )
 
@@ -706,6 +708,9 @@ class FastBPE:
 class SproutBrain:
     def __init__(self, V, gp=None, seed=1):
         self.gp = dict(SPROUT_GP)
+        if _os.environ.get('SPROUT_NO_GROWTH', '0') == '1':
+            self.gp['g_syn'] = 0.0
+            self.gp['coinc_frac'] = 0.0   # A/B：冻结结构，只调权重
         if gp:
             self.gp.update(gp)
         gp = self.gp
@@ -792,7 +797,10 @@ class SproutBrain:
             idx = self.n_syn
             self.n_syn += 1
         else:
-            # coverage 0.1.0：满员 → 淘汰使用率最低的突触（排名比较，无绝对阈值、不 scar）
+            # coverage 0.1.0：满员 → 淘汰使用率最低的突触（按字节比较，无绝对阈值、无 scar）
+            # 0.3.0 A/B：SPROUT_FREEZE_CAP=1 时满员即冻结结构（只调权重，不换人）
+            if FREEZE_CAP:
+                return False
             alive_syn = np.nonzero(self.s_alive)[0]
             if alive_syn.size == 0:
                 return False
@@ -887,7 +895,8 @@ class SproutBrain:
             fp = ap[self.c_i[mc]] * ap[self.c_j[mc]]
             rows = self.c_rows[mc]
             wv = self.c_w[mc]
-            np.add.at(l, rows.ravel(), (fp[:, None] * wv).ravel())
+            for f in range(self.fan):
+                l += np.bincount(rows[:, f], weights=fp * wv[:, f], minlength=self.V)
         return l
 
     def step(self, x, logits, learn):
@@ -1185,8 +1194,10 @@ class SproutBrain:
         es = 1.0 / (1.0 + self.clock / gp['eta_age_tau'])
         mro = self.s_alive & (self.s_j < self.V) & (self.s_i < keep)
         mc = self.c_alive & (self.c_i < keep) & (self.c_j < keep)
-        An = Ap / (np.sqrt(self.var[:keep]).astype(np.float32) + np.float32(0.1))
+        den = (np.sqrt(self.var[:keep]).astype(np.float32) + np.float32(0.1))  # 分块时再除，峰值少一份 (B,hw) 数组
         bs = gp['replay_batch']
+        # 0.3.0：分块更小省内存；按 (块数×轮数) 补偿，保持每次 replay 的总更新量不变
+        sc = 32.0 * bs / (gp['replay_sweeps'] * B)
         order = np.arange(B)
         ci = self.c_i[mc]
         cj = self.c_j[mc]
@@ -1202,27 +1213,32 @@ class SproutBrain:
                 L = np.tile(self.b, (len(idx), 1))
                 if mro.any():
                     vals = A[:, self.s_i[mro]] * self.s_w[mro]
-                    np.add.at(L.T, self.s_j[mro], vals.T)
+                    sj = self.s_j[mro]
+                    L += np.array([np.bincount(sj, weights=vals[r], minlength=self.V)
+                                   for r in range(len(idx))])
                 if len(ci):
                     F = (A[:, ci] * A[:, cj]).astype(np.float64)
                     for f in range(self.fan):
-                        np.add.at(L.T, cr[:, f], (F * W[:, f]).T)
+                        cf = cr[:, f]
+                        Wf = W[:, f]
+                        L += np.array([np.bincount(cf, weights=F[r] * Wf, minlength=self.V)
+                                       for r in range(len(idx))])
                 L -= L.max(axis=1, keepdims=True)
                 P = np.exp(L)
                 P /= P.sum(axis=1, keepdims=True)
                 T = np.zeros((len(idx), self.V))
                 T[np.arange(len(idx)), X] = 1.0
                 E = T - P
-                Anb = An[idx]
+                Anb = Ap[idx] / den
                 if mro.any():
-                    d = gp['eta_r'] * es * (Anb[:, self.s_i[mro]] * E[:, self.s_j[mro]]).mean(axis=0)
+                    d = sc * gp['eta_r'] * es * (Anb[:, self.s_i[mro]] * E[:, self.s_j[mro]]).mean(axis=0)
                     self.s_w[mro] = np.clip(self.s_w[mro] + d, -gp['w_clip'], gp['w_clip'])
                 if len(ci):
                     Fn = (Anb[:, ci] * Anb[:, cj]).astype(np.float64)
                     for f in range(self.fan):
-                        dW = gp['eta_coinc'] * es * (Fn * E[:, cr[:, f]]).mean(axis=0)
+                        dW = sc * gp['eta_coinc'] * es * (Fn * E[:, cr[:, f]]).mean(axis=0)
                         np.clip(W[:, f] + dW, -gp['w_clip'], gp['w_clip'], out=W[:, f])
-                self.b += gp['eta_b'] * es * E.mean(axis=0)
+                self.b += sc * gp['eta_b'] * es * E.mean(axis=0)
             sweeps += 1
         if len(ci):
             self.c_w[mc] = W
@@ -1746,6 +1762,12 @@ def train_sprout(brain, tokenizer, data_path, epochs=EPOCHS, save_path=CHECKPOIN
         if save_path:
             brain.save(save_path)
             log_and_print(f"检查点已保存: {save_path}")
+            best_path = save_path.replace('.pt', '_best.pt') if '.pt' in save_path else save_path + '.best'
+            global _BEST_PPL
+            if val_ppl < _BEST_PPL:
+                _BEST_PPL = val_ppl
+                brain.save(best_path)
+                log_and_print(f"★ 新最佳 VAL PPL {val_ppl:.3f}，快照已保存: {best_path}")
     return val_ppl
 
 # ================================================================================================
@@ -2597,7 +2619,8 @@ def _cli():
                 brain.load(CHECKPOINT)
                 log_and_print(f"已加载 {CHECKPOINT}，继续训练")
             except Exception as e:
-                log_and_print(f"加载 {CHECKPOINT} 失败: {e}（从头开始）")
+                log_and_print(f"加载 {CHECKPOINT} 失败: {e}（丢弃半加载状态，重置为全新脑）")
+                brain = SproutBrain(tokenizer.vocab_size, seed=1)
         train_sprout(brain, tokenizer, data_path, epochs=EPOCHS, save_path=CHECKPOINT)
         gen_msgs = [{'role': 'user', 'content': '你好，请介绍一下你自己。'}]
         text, _s = render_messages(gen_msgs, add_generation_prompt=True)
