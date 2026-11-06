@@ -291,6 +291,24 @@ python SproutNet_elite_0.4.0.py --train corpus.jsonl --epochs 3 --tokens 60000 -
 - **0.6.x** 参数推导替换：λ 族按膜时间常数、η 族按观测数闭环、m_* 按 ATP 消耗比例校准
 - **后续** torch 端口分支：批量并行多序列（架构不变，仅为吞吐）
 
+## grow 系列增量发布（2026-11-06）
+
+本批按四段版本号 `x.x.x.x` 逐个发布 `grow 1.0.0 → 4.1.0` 的单文件归档版本，每个版本对应一个独立 commit、tag 与 GitHub Release：
+
+| 原始版本 | 发布 tag / 文件 |
+|---|---|
+| grow 1.0.0 | `1.0.0.0` / `SproutNet_grow_1.0.0.0.py` |
+| grow 2.0.0 | `2.0.0.0` / `SproutNet_grow_2.0.0.0.py` |
+| grow 2.1.0 | `2.1.0.0` / `SproutNet_grow_2.1.0.0.py` |
+| grow 2.2.0 | `2.2.0.0` / `SproutNet_grow_2.2.0.0.py` |
+| grow 2.3.0 | `2.3.0.0` / `SproutNet_grow_2.3.0.0.py` |
+| grow 3.0.0 | `3.0.0.0` / `SproutNet_grow_3.0.0.0.py` |
+| grow 3.1.0 | `3.1.0.0` / `SproutNet_grow_3.1.0.0.py` |
+| grow 4.0.0 | `4.0.0.0` / `SproutNet_grow_4.0.0.0.py` |
+| grow 4.1.0 | `4.1.0.0` / `SproutNet_grow_4.1.0.0.py` |
+
+当前 `MAP.md` 已同步到 R186 实验台账。核心结论：当前总最好为 `A1x4 241.1 ± 4.0`；R168-C 的 `C-rand G=2` 双 seed 均值 `251.1`（相对 A2 `264.0` 为 −4.9%）是结构侧最干净的小正效应；`A1x4 + C-rand`、`C-rand+tier`、`C3/G3` 结构调优、`B1-bit` 逐细胞码位目标均已判负。详见 `MAP.md`。
+
 ## 引用与归档
 
 每个 release 由 Zenodo 自动归档并分配 DOI（见 Zenodo 上本仓库的存档页）。
